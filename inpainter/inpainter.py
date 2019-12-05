@@ -1,7 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import time
-from tqdm import tqdm
 from skimage.color import rgb2grey, rgb2lab
 from skimage.filters import laplace
 from sklearn.linear_model import Lasso
