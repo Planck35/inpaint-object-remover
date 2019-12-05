@@ -14,7 +14,8 @@ def main():
         image,
         mask,
         patch_size=args.patch_size,
-        plot_progress=args.plot_progress
+        plot_progress=args.plot_progress,
+        include_target_in_dict=args.include_target_in_dict
     ).inpaint()
     imsave(args.output, output_image, quality=100)
 
@@ -37,6 +38,12 @@ def parse_args():
     parser.add_argument(
         '--plot-progress',
         help='plot each generated image',
+        action='store_true',
+        default=False
+    )
+    parser.add_argument(
+        '--include-target-in-dict',
+        help='Include the target result inside the dictionary',
         action='store_true',
         default=False
     )

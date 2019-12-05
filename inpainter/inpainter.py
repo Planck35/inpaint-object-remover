@@ -9,13 +9,14 @@ from scipy.ndimage.filters import convolve
 
 
 class Inpainter():
-    def __init__(self, image, mask, patch_size=9, plot_progress=False):
+    def __init__(self, image, mask, patch_size=9, plot_progress=False, include_target_in_dict=False):
         self.image = image.astype('uint8')
         self.mask = mask.round().astype('uint8')
         self.patch_size = patch_size
         self.step_size = patch_size // 4
 
         self.plot_progress = plot_progress
+        self.include_target_in_dict = include_target_in_dict
 
         # Non initialized attributes
         self.working_image = None
@@ -107,21 +108,23 @@ class Inpainter():
         
         for i in range(0, self.working_image.shape[0]-self.patch_size, self.step_size):
             for j in range(0, self.working_image.shape[1]-self.patch_size, self.step_size):
-#                 self.dictionary_r.append(
-#                         np.copy(self.working_image[i:i+self.patch_size, j:j+self.patch_size, 0]))
-#                 self.dictionary_g.append(
-#                     np.copy(self.working_image[i:i+self.patch_size, j:j+self.patch_size, 1]))
-#                 self.dictionary_b.append(
-#                     np.copy(self.working_image[i:i+self.patch_size, j:j+self.patch_size, 2]))
-                temp_mask = self.working_mask[i:i +
-                                              self.patch_size, j:j+self.patch_size]
-                if not np.any(temp_mask):
+                if self.include_target_in_dict:
                     self.dictionary_r.append(
-                        np.copy(self.working_image[i:i+self.patch_size, j:j+self.patch_size, 0]))
+                            np.copy(self.working_image[i:i+self.patch_size, j:j+self.patch_size, 0]))
                     self.dictionary_g.append(
                         np.copy(self.working_image[i:i+self.patch_size, j:j+self.patch_size, 1]))
                     self.dictionary_b.append(
                         np.copy(self.working_image[i:i+self.patch_size, j:j+self.patch_size, 2]))
+                else:
+                    temp_mask = self.working_mask[i:i +
+                                                self.patch_size, j:j+self.patch_size]
+                    if not np.any(temp_mask):
+                        self.dictionary_r.append(
+                            np.copy(self.working_image[i:i+self.patch_size, j:j+self.patch_size, 0]))
+                        self.dictionary_g.append(
+                            np.copy(self.working_image[i:i+self.patch_size, j:j+self.patch_size, 1]))
+                        self.dictionary_b.append(
+                            np.copy(self.working_image[i:i+self.patch_size, j:j+self.patch_size, 2]))
         
         self.dictionary_r = np.stack(self.dictionary_r, axis=0)
         self.dictionary_g = np.stack(self.dictionary_g, axis=0)
