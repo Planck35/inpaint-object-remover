@@ -1,8 +1,10 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import time
+from tqdm import tqdm
 from skimage.color import rgb2grey, rgb2lab
 from skimage.filters import laplace
+from sklearn.linear_model import Lasso
 from scipy.ndimage.filters import convolve
 
 
@@ -11,6 +13,8 @@ class Inpainter():
         self.image = image.astype('uint8')
         self.mask = mask.round().astype('uint8')
         self.patch_size = patch_size
+        self.step_size = patch_size // 4
+
         self.plot_progress = plot_progress
 
         # Non initialized attributes
@@ -20,6 +24,13 @@ class Inpainter():
         self.confidence = None
         self.data = None
         self.priority = None
+        self.dictionary_r = []
+        self.dictionary_g = []
+        self.dictionary_b = []
+        self.r_Lasso = Lasso(max_iter=1e6, tol=0.001)
+        self.g_Lasso = Lasso(max_iter=1e6, tol=0.001)
+        self.b_Lasso = Lasso(max_iter=1e6, tol=0.001)
+        self.Lasso = Lasso(max_iter=1e6, tol=0.001)
 
     def inpaint(self):
         """ Compute the new image and return it """
@@ -38,14 +49,15 @@ class Inpainter():
 
             target_pixel = self._find_highest_priority_pixel()
             find_start_time = time.time()
-            source_patch = self._find_source_patch(target_pixel)
+            generated_image = self._generate_by_dict(target_pixel)
             print('Time to find best: %f seconds'
                   % (time.time()-find_start_time))
 
-            self._update_image(target_pixel, source_patch)
+            self._update_image(target_pixel, generated_image)
 
             keep_going = not self._finished()
 
+        self._plot_image()
         print('Took %f seconds to complete' % (time.time() - start_time))
         return self.working_image
 
@@ -92,6 +104,39 @@ class Inpainter():
 
         self.working_image = np.copy(self.image)
         self.working_mask = np.copy(self.mask)
+        
+        for i in range(0, self.working_image.shape[0]-self.patch_size, self.step_size):
+            for j in range(0, self.working_image.shape[1]-self.patch_size, self.step_size):
+#                 self.dictionary_r.append(
+#                         np.copy(self.working_image[i:i+self.patch_size, j:j+self.patch_size, 0]))
+#                 self.dictionary_g.append(
+#                     np.copy(self.working_image[i:i+self.patch_size, j:j+self.patch_size, 1]))
+#                 self.dictionary_b.append(
+#                     np.copy(self.working_image[i:i+self.patch_size, j:j+self.patch_size, 2]))
+                temp_mask = self.working_mask[i:i +
+                                              self.patch_size, j:j+self.patch_size]
+                if not np.any(temp_mask):
+                    self.dictionary_r.append(
+                        np.copy(self.working_image[i:i+self.patch_size, j:j+self.patch_size, 0]))
+                    self.dictionary_g.append(
+                        np.copy(self.working_image[i:i+self.patch_size, j:j+self.patch_size, 1]))
+                    self.dictionary_b.append(
+                        np.copy(self.working_image[i:i+self.patch_size, j:j+self.patch_size, 2]))
+        
+        self.dictionary_r = np.stack(self.dictionary_r, axis=0)
+        self.dictionary_g = np.stack(self.dictionary_g, axis=0)
+        self.dictionary_b = np.stack(self.dictionary_b, axis=0)
+#         print("before reshape concat dictionary shape:{}".format(self.dictionary_r.shape))   
+        
+        self.dictionary_r = np.reshape(
+            self.dictionary_r, [self.dictionary_r.shape[0], -1])
+        self.dictionary_g = np.reshape(
+            self.dictionary_g, [self.dictionary_g.shape[0], -1])
+        self.dictionary_b = np.reshape(
+            self.dictionary_b, [self.dictionary_b.shape[0], -1])
+        
+#         self.dictionary = np.concatenate((self.dictionary_r, self.dictionary_g, self.dictionary_b), axis=0)
+        
 
     def _find_front(self):
         """ Find the front using laplacian on the mask
@@ -110,6 +155,8 @@ class Inpainter():
         self.priority = self.confidence * self.data * self.front
 
     def _update_confidence(self):
+        # This function the center of this patch
+        # Consider refactor
         new_confidence = np.copy(self.confidence)
         front_positions = np.argwhere(self.front == 1)
         for point in front_positions:
@@ -180,38 +227,104 @@ class Inpainter():
         point = np.unravel_index(self.priority.argmax(), self.priority.shape)
         return point
 
-    def _find_source_patch(self, target_pixel):
+    def _generate_by_dict(self, target_pixel):
         target_patch = self._get_patch(target_pixel)
-        height, width = self.working_image.shape[:2]
-        patch_height, patch_width = self._patch_shape(target_patch)
+        
+        temp_h = target_patch[0][1] - target_patch[0][0] + 1
+        temp_w = target_patch[1][1] - target_patch[1][0] + 1
+        
+        raw_y_r = self.working_image[target_patch[0][0]:target_patch[0][1]+1,
+                                      target_patch[1][0]:target_patch[1][1]+1, 0]
+        raw_y_g = self.working_image[target_patch[0][0]:target_patch[0][1]+1,
+                                      target_patch[1][0]:target_patch[1][1]+1, 1]
+        raw_y_b = self.working_image[target_patch[0][0]:target_patch[0][1]+1,
+                                      target_patch[1][0]:target_patch[1][1]+1, 2]
+        
+        raw_y_r = raw_y_r.reshape(-1)
+        raw_y_g = raw_y_g.reshape(-1)
+        raw_y_b = raw_y_b.reshape(-1)
+        
+        
+        dictionary_tr = self.dictionary_r.reshape((-1,self.patch_size, self.patch_size))[:, 0:temp_h, 0:temp_w].reshape((-1, temp_h*temp_w))
+        dictionary_tg = self.dictionary_g.reshape((-1,self.patch_size, self.patch_size))[:, 0:temp_h, 0:temp_w].reshape((-1, temp_h*temp_w))
+        dictionary_tb = self.dictionary_b.reshape((-1,self.patch_size, self.patch_size))[:, 0:temp_h, 0:temp_w].reshape((-1, temp_h*temp_w))
+        
+        temp_mask = self.working_mask[target_patch[0][0]:target_patch[0][1]+1,
+                                      target_patch[1][0]:target_patch[1][1]+1]
 
-        best_match = None
-        best_match_difference = 0
+        temp_mask = temp_mask.reshape(-1)
 
-        lab_image = rgb2lab(self.working_image)
+        raw_y_r = raw_y_r[temp_mask==0]
+        raw_y_g = raw_y_g[temp_mask==0]
+        raw_y_b = raw_y_b[temp_mask==0]
+        
+        dictionary_tr = dictionary_tr[:, temp_mask==0].T
+        dictionary_tg = dictionary_tg[:, temp_mask==0].T
+        dictionary_tb = dictionary_tb[:, temp_mask==0].T
+        
+#         for i in range(target_patch[0][0], target_patch[0][1]+1):
+#             for j in range(target_patch[1][0], target_patch[1][1]+1):
+#                 temp_mask = self.working_mask[i,j]
+#                 if not temp_mask:
+#                     raw_y_r.append(self.working_image[i,j,0])
+#                     raw_y_g.append(self.working_image[i,j,1])
+#                     raw_y_b.append(self.working_image[i,j,2])
+#                     dictionary_tr.append(self.dictionary_r[(i - target_patch[0][0]) * self.patch_size + j - target_patch[1][0], :])
+#                     dictionary_tg.append(self.dictionary_g[(i - target_patch[0][0]) * self.patch_size + j - target_patch[1][0], :])
+#                     dictionary_tb.append(self.dictionary_b[(i - target_patch[0][0]) * self.patch_size + j - target_patch[1][0], :])
+# #                 else:
+# #                     raw_y_r.append(self.working_image[i,j,0])
+# #                     raw_y_g.append(self.working_image[i,j,1])
+# #                     raw_y_b.append(self.working_image[i,j,2])
+# #                     dictionary_tr.append(self.dictionary_r[(i - target_patch[0][0]) * self.patch_size + j - target_patch[1][0], :])
+# #                     dictionary_tg.append(self.dictionary_g[(i - target_patch[0][0]) * self.patch_size + j - target_patch[1][0], :])
+# #                     dictionary_tb.append(self.dictionary_b[(i - target_patch[0][0]) * self.patch_size + j - target_patch[1][0], :])
+    
+#         dictionary_tr = np.stack(dictionary_tr, axis=0)
+#         dictionary_tg = np.stack(dictionary_tg, axis=0) 
+#         dictionary_tb = np.stack(dictionary_tb, axis=0) 
+#         raw_y_r = np.array(raw_y_r)
+#         raw_y_g = np.array(raw_y_g)
+#         raw_y_b = np.array(raw_y_b)
+# #         dictionary = np.concatenate((dictionary_tr, dictionary_tg, dictionary_tb), axis=0)
+# #         raw_y = np.concatenate((raw_y_r, raw_y_g, raw_y_b), axis=0)
+# #         print(dictionary.shape, raw_y.shape)
 
-        for y in range(height - patch_height + 1):
-            for x in range(width - patch_width + 1):
-                source_patch = [
-                    [y, y + patch_height-1],
-                    [x, x + patch_width-1]
-                ]
-                if self._patch_data(self.working_mask, source_patch) \
-                   .sum() != 0:
-                    continue
+        self.r_Lasso.fit(dictionary_tr, raw_y_r)
+        self.g_Lasso.fit(dictionary_tg, raw_y_g)
+        self.b_Lasso.fit(dictionary_tb, raw_y_b)
+        
+        dictionary_r_p = self.dictionary_r.reshape((-1,self.patch_size, 
+                                                    self.patch_size))[:, 0:temp_h, 0:temp_w].reshape((-1, temp_h*temp_w)).T
+        dictionary_g_p = self.dictionary_g.reshape((-1,self.patch_size, 
+                                                    self.patch_size))[:, 0:temp_h, 0:temp_w].reshape((-1, temp_h*temp_w)).T
+        dictionary_b_p = self.dictionary_b.reshape((-1,self.patch_size, 
+                                                    self.patch_size))[:, 0:temp_h, 0:temp_w].reshape((-1, temp_h*temp_w)).T
+        
+        
+        predict_r = self.r_Lasso.predict(dictionary_r_p).reshape(
+            (temp_h, temp_w))
+        predict_g = self.g_Lasso.predict(dictionary_g_p).reshape(
+            (temp_h, temp_w))
+        predict_b = self.b_Lasso.predict(dictionary_b_p).reshape(
+            (temp_h, temp_w))
+        
+#         self.Lasso.fit(dictionary, raw_y)
+#         predict = self.Lasso.predict(self.dictionary)
+#         predict_r = predict[:self.patch_size**2].reshape(
+#             (self.patch_size, self.patch_size))
+#         predict_g = predict[self.patch_size**2:2*self.patch_size**2].reshape(
+#             (self.patch_size, self.patch_size))
+#         predict_b = predict[2*self.patch_size**2:].reshape(
+#             (self.patch_size, self.patch_size))
 
-                difference = self._calc_patch_difference(
-                    lab_image,
-                    target_patch,
-                    source_patch
-                )
+        # [patch_size, patch_size, 3]
+        predict = np.stack([predict_r, predict_g, predict_b], axis=-1)
 
-                if best_match is None or difference < best_match_difference:
-                    best_match = source_patch
-                    best_match_difference = difference
-        return best_match
+        return predict
 
-    def _update_image(self, target_pixel, source_patch):
+    # def _update_image(self, target_pixel, source_patch):
+    def _update_image(self, target_pixel, generated_image):
         target_patch = self._get_patch(target_pixel)
         pixels_positions = np.argwhere(
             self._patch_data(
@@ -225,10 +338,10 @@ class Inpainter():
 
         mask = self._patch_data(self.working_mask, target_patch)
         rgb_mask = self._to_rgb(mask)
-        source_data = self._patch_data(self.working_image, source_patch)
+
         target_data = self._patch_data(self.working_image, target_patch)
 
-        new_data = source_data*rgb_mask + target_data*(1-rgb_mask)
+        new_data = generated_image*rgb_mask + target_data*(1-rgb_mask)
 
         self._copy_to_patch(
             self.working_image,
